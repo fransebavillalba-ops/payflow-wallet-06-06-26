@@ -1,0 +1,353 @@
+// PayFlow - Prisma Schema v3 (Formal + Admin)
+// PostgreSQL via Prisma ORM
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ─── USER ─────────────────────────────────────────────
+model User {
+  id          String    @id @default(uuid())
+  email       String    @unique
+  name        String
+  password    String
+
+  // KYC fields
+  firstName   String?
+  lastName    String?
+  dni         String?   @unique
+  birthDate   DateTime?
+  gender      String?
+  kycStatus   KycStatus @default(PENDING)
+
+  role        Role      @default(USER)
+
+  // Transfer PIN
+  transferPinHash   String?
+  pinFailedAttempts Int     @default(0)
+  pinLockedUntil    DateTime?
+
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  wallet        Wallet?
+  refreshTokens RefreshToken[]
+  auditLogs     AuditLog[]
+  contacts      Contact[]        @relation("UserContacts")
+  notifications    Notification[]
+  kycVerifications KycVerification[] @relation("UserKycVerifications")
+
+  @@map("users")
+}
+
+enum Role {
+  USER
+  ADMIN
+}
+
+enum KycStatus {
+  PENDING
+  REVIEW
+  APPROVED
+  REJECTED
+}
+
+// ─── WALLET ───────────────────────────────────────────
+model Wallet {
+  id        String       @id @default(uuid())
+  alias     String       @unique
+  cvu       String       @unique
+  balance   Decimal      @default(0) @db.Decimal(18, 2)
+  status    WalletStatus @default(PENDING_KYC)
+  userId    String       @unique
+  createdAt DateTime     @default(now())
+  updatedAt DateTime     @updatedAt
+
+  user                    User              @relation(fields: [userId], references: [id])
+  sentTransactions        Transaction[]     @relation("SenderWallet")
+  receivedTransactions    Transaction[]     @relation("ReceiverWallet")
+  ledgerEntries           LedgerEntry[]
+  marketOperations        MarketOperation[]
+  paymentRequestsSent     PaymentRequest[]  @relation("RequesterWallet")
+  paymentRequestsReceived PaymentRequest[]  @relation("PayerWallet")
+  portfolioHoldings       PortfolioHolding[]
+
+  @@map("wallets")
+}
+
+enum WalletStatus {
+  PENDING_KYC
+  ACTIVE
+  SUSPENDED
+  BLOCKED
+  CLOSED
+}
+
+// ─── TRANSACTION ──────────────────────────────────────
+model Transaction {
+  id               String            @id @default(uuid())
+  amount           Decimal           @db.Decimal(18, 2)
+  concept          String
+  status           TransactionStatus @default(PENDING)
+  type             TransactionType   @default(TRANSFER)
+  failureReason    String?
+  idempotencyKey   String            @unique
+  senderWalletId   String
+  receiverWalletId String
+  createdAt        DateTime          @default(now())
+  updatedAt        DateTime          @updatedAt
+
+  senderWallet    Wallet          @relation("SenderWallet", fields: [senderWalletId], references: [id])
+  receiverWallet  Wallet          @relation("ReceiverWallet", fields: [receiverWalletId], references: [id])
+  ledgerBlock     LedgerBlock?
+  ledgerEntries   LedgerEntry[]
+  marketOperation MarketOperation?
+
+  @@index([senderWalletId])
+  @@index([receiverWalletId])
+  @@index([status])
+  @@index([createdAt])
+  @@map("transactions")
+}
+
+enum TransactionStatus {
+  PENDING
+  PROCESSING
+  SUCCESS
+  FAILED
+  CANCELLED
+}
+
+enum TransactionType {
+  TRANSFER
+  DEPOSIT
+  WITHDRAWAL
+  MARKET_BUY
+  MARKET_SELL
+}
+
+// ─── LEDGER ENTRY (double-entry accounting) ───────────
+model LedgerEntry {
+  id             String          @id @default(uuid())
+  transactionId  String
+  walletId       String
+  direction      LedgerDirection
+  amount         Decimal         @db.Decimal(18, 2)
+  balanceBefore  Decimal         @db.Decimal(18, 2)
+  balanceAfter   Decimal         @db.Decimal(18, 2)
+  createdAt      DateTime        @default(now())
+
+  transaction    Transaction     @relation(fields: [transactionId], references: [id])
+  wallet         Wallet          @relation(fields: [walletId], references: [id])
+
+  @@index([transactionId])
+  @@index([walletId])
+  @@map("ledger_entries")
+}
+
+enum LedgerDirection {
+  DEBIT
+  CREDIT
+}
+
+// ─── LEDGER BLOCK (SHA-256 chain) ────────────────────
+model LedgerBlock {
+  id            String   @id @default(cuid())
+  blockNumber   Int      @unique @default(autoincrement())
+  transactionId String   @unique
+  previousHash  String
+  currentHash   String
+  payload       Json
+  algorithm     String   @default("SHA-256")
+  createdAt     DateTime @default(now())
+
+  transaction   Transaction @relation(fields: [transactionId], references: [id])
+
+  @@index([blockNumber])
+  @@map("ledger_blocks")
+}
+
+// ─── REFRESH TOKEN ────────────────────────────────────
+model RefreshToken {
+  id        String   @id @default(uuid())
+  token     String   @unique
+  userId    String
+  expiresAt DateTime
+  revoked   Boolean  @default(false)
+  createdAt DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id])
+
+  @@index([userId])
+  @@map("refresh_tokens")
+}
+
+// ─── AUDIT LOG ────────────────────────────────────────
+model AuditLog {
+  id        String   @id @default(uuid())
+  action    String
+  userId    String
+  metadata  Json
+  createdAt DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id])
+
+  @@index([userId])
+  @@index([action])
+  @@index([createdAt])
+  @@map("audit_logs")
+}
+
+// ─── CONTACT ─────────────────────────────────────────
+model Contact {
+  id        String   @id @default(uuid())
+  userId    String
+  alias     String
+  label     String?
+  createdAt DateTime @default(now())
+
+  user User @relation("UserContacts", fields: [userId], references: [id])
+
+  @@unique([userId, alias])
+  @@index([userId])
+  @@map("contacts")
+}
+
+// ─── NOTIFICATION ─────────────────────────────────────
+model Notification {
+  id        String   @id @default(uuid())
+  userId    String
+  title     String
+  message   String
+  type      String
+  read      Boolean  @default(false)
+  createdAt DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id])
+
+  @@index([userId])
+  @@index([read])
+  @@map("notifications")
+}
+
+// ─── PAYMENT REQUEST ──────────────────────────────────
+model PaymentRequest {
+  id                 String               @id @default(uuid())
+  requesterWalletId  String
+  payerWalletId      String
+  amount             Decimal              @db.Decimal(18, 2)
+  concept            String
+  status             PaymentRequestStatus @default(PENDING)
+  createdAt          DateTime             @default(now())
+  updatedAt          DateTime             @updatedAt
+  expiresAt          DateTime
+
+  requesterWallet    Wallet @relation("RequesterWallet", fields: [requesterWalletId], references: [id])
+  payerWallet        Wallet @relation("PayerWallet", fields: [payerWalletId], references: [id])
+
+  @@index([requesterWalletId])
+  @@index([payerWalletId])
+  @@map("payment_requests")
+}
+
+enum PaymentRequestStatus {
+  PENDING
+  ACCEPTED
+  REJECTED
+  EXPIRED
+}
+
+// ─── MARKET ASSET ─────────────────────────────────────
+model MarketAsset {
+  id            String        @id @default(uuid())
+  symbol        String        @unique
+  name          String
+  category      AssetCategory
+  currentPrice  Decimal       @db.Decimal(18, 2)
+  priceHistory  Json          @default("[]")
+  isActive      Boolean       @default(true)
+  createdAt     DateTime      @default(now())
+  updatedAt     DateTime      @updatedAt
+
+  operations    MarketOperation[]
+
+  @@map("market_assets")
+}
+
+enum AssetCategory {
+  ETF_INDEX
+  CRYPTO
+  COMMODITY
+}
+
+// ─── MARKET OPERATION ─────────────────────────────────
+model MarketOperation {
+  id               String   @id @default(uuid())
+  transactionId    String   @unique
+  walletId         String
+  assetId          String
+  operationType    String
+  quantity         Decimal  @db.Decimal(18, 8)
+  priceAtOperation Decimal  @db.Decimal(18, 2)
+  totalAmount      Decimal  @db.Decimal(18, 2)
+  createdAt        DateTime @default(now())
+
+  transaction Transaction @relation(fields: [transactionId], references: [id])
+  wallet      Wallet      @relation(fields: [walletId], references: [id])
+  asset       MarketAsset @relation(fields: [assetId], references: [id])
+
+  @@map("market_operations")
+}
+
+// ─── PORTFOLIO HOLDING ────────────────────────────────
+model PortfolioHolding {
+  id        String   @id @default(uuid())
+  walletId  String
+  assetId   String
+  quantity  Decimal  @db.Decimal(18, 8)
+  avgPrice  Decimal  @db.Decimal(18, 2)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  wallet Wallet @relation(fields: [walletId], references: [id])
+
+  @@unique([walletId, assetId])
+  @@map("portfolio_holdings")
+}
+
+// ─── KYC VERIFICATION ─────────────────────────────────
+model KycVerification {
+  id                  String    @id @default(uuid())
+  userId              String
+  documentType        String    @default("DNI")
+  documentNumber      String?
+  fullName            String?
+  birthDate           String?
+  frontImagePath      String?
+  backImagePath       String?
+  selfieImagePath     String?
+  extractedData       Json?
+  status              KycVerifStatus @default(PENDING)
+  rejectionReason     String?
+  reviewedByAdminId   String?
+  reviewedAt          DateTime?
+  createdAt           DateTime  @default(now())
+  updatedAt           DateTime  @updatedAt
+
+  user  User  @relation("UserKycVerifications", fields: [userId], references: [id])
+
+  @@index([userId])
+  @@index([status])
+  @@map("kyc_verifications")
+}
+
+enum KycVerifStatus {
+  PENDING
+  APPROVED
+  REJECTED
+}

@@ -1,0 +1,8 @@
+node_modules/
+dist/
+.env
+*.log
+uploads/kyc/*.jpg
+uploads/kyc/*.jpeg
+uploads/kyc/*.png
+uploads/kyc/*.webp
